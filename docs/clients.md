@@ -25,8 +25,9 @@ person wants to use Sure directly, manage settings, connect providers, review
 transactions, or work with features that may not yet be available in native
 clients.
 
-For self-hosting, start with the [Docker hosting guide](hosting/docker.md). For
-local development, run the Rails app and visit the local server URL:
+For self-hosting, start with the [Docker hosting guide](hosting/docker.md).
+A Render Blueprint deploy is documented in Portuguese in [Deploying Sure on Render](hosting/render.md).
+For local development, run the Rails app and visit the local server URL:
 
 ```sh
 bin/dev
