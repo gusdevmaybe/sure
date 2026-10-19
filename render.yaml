@@ -1,0 +1,190 @@
+# yaml-language-server: $schema=https://render.com/schema/render.yaml.json
+#
+# Sure on Render. Deploy from the Dashboard (New → Blueprint) or
+# https://render.com/deploy?repo=https://github.com/gusdevmaybe/sure
+# after this file is on the branch Render builds.
+#
+# Estimated cost of the plans below: about US$7/month (Hobby workspace).
+# Only the Sidekiq worker is paid. Web, Postgres, and Key Value are free
+# tiers with the limits called out on each resource. A durable alternative
+# is in the comments and in docs/hosting/render.md.
+#
+# All four resources stay in oregon so the web and worker reach Postgres
+# and Key Value over the private network. The connection strings below are
+# the internal ones (no public SSL required).
+
+services:
+  # Web. Plan `free` is US$0/month: 0.1 CPU, 512 MB RAM.
+  # Free instances sleep after inactivity and cannot mount a persistent disk,
+  # so local Active Storage uploads under /rails/storage do not survive a
+  # restart. The paid step up is `0.5c-512mb` (US$7/month); a disk is then
+  # US$0.25/GB/month.
+  #
+  # preDeployCommand is only available on paid web services, so this service
+  # does not set one. bin/docker-entrypoint runs `./bin/rails db:prepare`
+  # when the command is `./bin/rails server` (the Dockerfile CMD) before
+  # Puma starts. Health checks hit GET /up.
+  - type: web
+    name: sure
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /up
+    envVars:
+      - fromGroup: sure-config
+      # Required by .env.example. Render prompts once per service because
+      # sync: false is ignored inside an env group. Enter `open` here and
+      # on the worker (the same value) so the first account can be created.
+      # `closed` and `invite_only` block that signup.
+      - key: ONBOARDING_STATE
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: sure-db
+          property: connectionString
+      # database.yml reads these names. Blueprint databases expose user,
+      # password, and database, but not host/port. Rails 8 merges
+      # DATABASE_URL over database.yml, and the URL wins for host, port,
+      # user, password, and database name, so the internal connection
+      # string is what the app uses.
+      - key: POSTGRES_USER
+        fromDatabase:
+          name: sure-db
+          property: user
+      - key: POSTGRES_PASSWORD
+        fromDatabase:
+          name: sure-db
+          property: password
+      - key: POSTGRES_DB
+        fromDatabase:
+          name: sure-db
+          property: database
+      - key: REDIS_URL
+        fromService:
+          name: sure-redis
+          type: keyvalue
+          property: connectionString
+      - key: APP_DOMAIN
+        fromService:
+          name: sure
+          type: web
+          envVarKey: RENDER_EXTERNAL_HOSTNAME
+
+  # Sidekiq. Background workers have no free plan.
+  # `0.5c-512mb` (legacy name: starter) is the smallest: US$7/month,
+  # 0.5 CPU, 512 MB RAM. Demo-data generation does not fit in 512 MB;
+  # raise this plan before using "Load sample data", then deploy again
+  # (a restart does not apply a plan change). See docs/hosting/docker.md.
+  #
+  # preDeployCommand runs ./bin/rails db:prepare before Sidekiq. The
+  # entrypoint only auto-prepares when argv is `./bin/rails server`, so
+  # the worker needs this explicit step. Rails takes an advisory lock,
+  # so this can overlap the web process's entrypoint prepare.
+  - type: worker
+    name: sure-worker
+    runtime: docker
+    plan: 0.5c-512mb
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: bundle exec sidekiq
+    preDeployCommand: ./bin/rails db:prepare
+    envVars:
+      - fromGroup: sure-config
+      - key: ONBOARDING_STATE
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: sure-db
+          property: connectionString
+      - key: POSTGRES_USER
+        fromDatabase:
+          name: sure-db
+          property: user
+      - key: POSTGRES_PASSWORD
+        fromDatabase:
+          name: sure-db
+          property: password
+      - key: POSTGRES_DB
+        fromDatabase:
+          name: sure-db
+          property: database
+      - key: REDIS_URL
+        fromService:
+          name: sure-redis
+          type: keyvalue
+          property: connectionString
+      - key: APP_DOMAIN
+        fromService:
+          name: sure
+          type: web
+          envVarKey: RENDER_EXTERNAL_HOSTNAME
+
+  # Render Key Value (Redis-compatible). Plan `free` is US$0/month:
+  # 25 MB RAM, 50 connections, no disk persistence (data is dropped on
+  # restart). Sidekiq cron is re-registered when the worker boots, but
+  # in-flight jobs are lost. The smallest persistent plan is `256mb`
+  # (legacy name: starter), US$10/month.
+  #
+  # noeviction: a full instance refuses writes instead of dropping
+  # Sidekiq keys the way the default allkeys-lru policy would.
+  # ipAllowList empty: only other services in this private network connect.
+  - type: keyvalue
+    name: sure-redis
+    plan: free
+    region: oregon
+    maxmemoryPolicy: noeviction
+    ipAllowList: []
+
+databases:
+  # Plan `free` is US$0/month: 0.1 CPU, 256 MB RAM, 1 GB storage.
+  # The database expires 30 days after creation. There is a 14-day grace
+  # period to upgrade; after that Render deletes it and the data.
+  # The smallest paid plan is `0.1c-256mb` (US$6/month). Set diskSizeGB: 1
+  # when you switch so storage stays at the included 1 GB; extra storage
+  # is US$0.30/GB/month. Postgres 16 matches compose.example.yml.
+  #
+  # ipAllowList empty: the app connects with the internal URL only.
+  - name: sure-db
+    plan: free
+    region: oregon
+    postgresMajorVersion: "16"
+    databaseName: sure_production
+    ipAllowList: []
+
+envVarGroups:
+  # Shared by the web service and the worker. SECRET_KEY_BASE must be one
+  # value: signed cookies and the self-hosted Active Record encryption keys
+  # are derived from it. generateValue creates a base64 256-bit secret on
+  # the first sync and keeps it after that.
+  - name: sure-config
+    envVars:
+      - key: SELF_HOSTED
+        value: "true"
+      - key: RAILS_ENV
+        value: production
+      - key: SECRET_KEY_BASE
+        generateValue: true
+      # Render terminates TLS and forwards HTTP. The app defaults both to
+      # true; Compose sets them false because that proxy speaks plain HTTP.
+      # assume_ssl marks the request as HTTPS so force_ssl does not redirect
+      # Render's HTTP health check on /up.
+      - key: RAILS_ASSUME_SSL
+        value: "true"
+      - key: RAILS_FORCE_SSL
+        value: "true"
+      # 512 MB tuning from docs/hosting/docker.md. Puma stays at 1 process
+      # and Sidekiq concurrency follows RAILS_MAX_THREADS.
+      - key: WEB_CONCURRENCY
+        value: "1"
+      - key: RAILS_MAX_THREADS
+        value: "3"
+      # .env.example turns these on so quotes and exchange rates work
+      # without a Twelve Data key. Set TWELVE_DATA_API_KEY in the Dashboard
+      # and switch the providers if you prefer Twelve Data.
+      - key: EXCHANGE_RATE_PROVIDER
+        value: yahoo_finance
+      - key: SECURITIES_PROVIDER
+        value: yahoo_finance
