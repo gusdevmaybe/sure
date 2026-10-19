@@ -41,3 +41,9 @@ Adding or modifying `app/controllers/api/v1/` endpoints requires Minitest behavi
 - Read [provider sync guidance](docs/llm-guides/providers.md) when changing imports, pending transactions, FX metadata or diagnostics. Use `DebugLogEntry.capture(...)` for support-relevant failures and partial responses, with provider/source metadata and family/account-provider context where available.
 - For securities providers, follow [adding a securities provider](docs/llm-guides/adding-a-securities-provider.md).
 - For feature rollout, follow [preview-feature gating](docs/llm-guides/gating-a-preview-feature.md); for goals, read the [Goals guide](docs/llm-guides/goals.md).
+
+## Cursor Cloud specific instructions
+
+- Postgres 16 and Redis are started on boot, then `bin/dev` serves Rails, the Tailwind watcher, and Sidekiq on port 3000. Health check: `http://127.0.0.1:3000/up`. Do not start a second `bin/dev` if that check already returns 200.
+- Boot creates `.env.local` (from `.env.local.example` when missing) and `.env.test` with `POSTGRES_USER=postgres` and `POSTGRES_PASSWORD=postgres`. Do not set `POSTGRES_DB`. Development uses `sure_development` and test uses `sure_test`. Dotenv does not load `.env.local` during tests, so database credentials belong in `.env.test`.
+- After `bin/rails demo_data:default`, sign in at `/sessions/new` with `user@example.com` / `Password1!`.
